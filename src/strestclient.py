@@ -172,14 +172,16 @@ class AsynchBuffer(object):
 '''
 class StrestClient(asyncore.dispatcher):
 
-    def __init__(self, host, port):
+    def __init__(self, host, port, disconnect_callback=None):
         asyncore.dispatcher.__init__(self)
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connect( (host, port) )
         self.buffer = bytearray()
         self.callbacks = dict()
         self.in_buf = AsynchBuffer()
+        self.disconnect_callback = disconnect_callback
         self.responses = StrestResponseReader(self.in_buf, self.message_received)
+    
         
     def message_received(self, response):
         print "recieved"
@@ -205,6 +207,9 @@ class StrestClient(asyncore.dispatcher):
         lines = [request.method + " " + request.uri + " " + strestutil.STREST_VERSION]
         lines.extend(["%s: %s" % (n, v) for n, v in request.headers.iteritems()])
         packet = "\r\n".join(lines) + "\r\n\r\n"
+        print "******"
+        print packet
+        print "*******"
         self.buffer.extend(packet)
         
     
@@ -213,6 +218,12 @@ class StrestClient(asyncore.dispatcher):
         pass
 
     def handle_close(self):
+        print "CLOSED!"
+        if self.disconnect_callback :
+            self.disconnect_callback(self)
+        for txn in self.callbacks :
+            if self.callbacks[txn][1] :
+                self.callbacks[txn][1](self, Exception("Disconnected!"))    
         self.close()
 
     def handle_read(self):
@@ -232,7 +243,7 @@ def example_callback(response):
             
 #main app entry point
 if __name__ == "__main__":
-    client = StrestClient('localhost', 8008)
+    client = StrestClient('localhost', 8000)
     request = STRESTRequest('/firehose')
     
     client.send_request(request, example_callback)

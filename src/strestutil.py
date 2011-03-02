@@ -23,7 +23,10 @@ import re
 
 
 
-''' Atomic increment http://29a.ch/2009/2/20/atomic-get-and-increment-in-python '''
+''' Atomic increment http://29a.ch/2009/2/20/atomic-get-and-increment-in-python 
+    TODO: I believe itertools is gone in python 3, need a replacement..
+'''
+
 _counter = itertools.count()
 '''
     atomically generate a new txn-id.  
@@ -186,9 +189,7 @@ def _utf8(value):
 class STRESTRequest(object):
     def __init__(self, uri, method="GET", headers=None, content=None):
         if headers is None:
-            headers = STRESTHeaders()
-        headers.set_if_absent(HEADERS.TXN_ACCEPT, "single")
-        headers.set_if_absent(HEADERS.TXN_ID, generate_txn_id())        
+            headers = STRESTHeaders()      
         self.uri = _utf8(uri)
         self.method = method
         self.headers = headers
