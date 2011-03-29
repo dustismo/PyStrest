@@ -85,7 +85,9 @@ class STRESTHeaders(dict):
     def set_if_absent(self, key, val):
         if not self.get(key, False) :
             self[key] = val
-        
+    
+    def set(self, key, val):
+        self[key] = val
         
     
     # new public methods

@@ -1,14 +1,9 @@
-import re
 import asyncore, socket
-from Queue import Queue
 from strestutil import STRESTHeaders, STRESTResponse, STRESTRequest
 import zlib
-from threading import RLock
+from threading import RLock, BoundedSemaphore
 import threading
 import strestutil
-
-
-
 
 
 
@@ -174,7 +169,36 @@ class AsynchBuffer(object):
 
 
 def _start_io_loop():
-    threading.Thread(target=asyncore.loop).start()
+    thread = threading.Thread(target=asyncore.loop)
+    thread.daemon = True
+    thread.start()
+
+'''
+    This (internal) class allows us to do blocking requests via the asynch send_request method
+'''
+class BlockingRequest():
+    
+    def __init__(self):
+        self.semaphore = BoundedSemaphore(1)
+        self.exception = None
+        self.response = None
+        self.semaphore.acquire(True)
+    
+    def response_callback(self, response):
+        self.response = response
+        self.semaphore.release()
+    
+    
+    def error_callback(self, exception):
+        self.exception = exception
+        self.semaphore.release()
+    
+    ''' returns the response or throws an exception '''
+    def await_response(self):
+        self.semaphore.acquire(True)        
+        if self.exception :
+            raise self.exception
+        return self.response
         
         
 '''
@@ -215,7 +239,7 @@ class StrestClient(asyncore.dispatcher):
         to delegate any heavy processing or blocking functionality elsewhere.
         
     '''
-    def send_request(self, request, response_callback, txn_complete_callback=None, error_callback=None):
+    def send_request(self, request, response_callback=None, txn_complete_callback=None, error_callback=None):        
         with self.lock :
             request.headers.set_if_absent(strestutil.HEADERS.TXN_ID, strestutil.generate_txn_id())
             request.headers.set_if_absent(strestutil.HEADERS.TXN_ACCEPT, "multi")
@@ -238,6 +262,17 @@ class StrestClient(asyncore.dispatcher):
             print "*******"
             self.buffer.extend(packet)
     
+    '''
+        Does a blocking request.
+        does not block other threads doing concurrent requests
+        
+        returns the response or raises an exception    
+    '''
+    def send_blocking_request(self, request):
+        cb = BlockingRequest()
+        request.headers.set(strestutil.HEADERS.TXN_ACCEPT, "single")
+        self.send_request(request, cb.response_callback, None, cb.error_callback)
+        return cb.await_response()
         
     def _message_received(self, response):
         print "recieved"
@@ -293,4 +328,9 @@ if __name__ == "__main__":
     client = StrestClient('localhost', 8000)
     request = STRESTRequest('/firehose')
     client.send_request(request, example_callback)    
+    
+    request = STRESTRequest('/hello/strest')
+    response = client.send_blocking_request(request)
+    print "GOT IT! ", response.content
+    
     
