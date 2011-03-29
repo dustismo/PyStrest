@@ -4,9 +4,16 @@ from Queue import Queue
 from strestutil import STRESTHeaders, STRESTResponse, STRESTRequest
 import zlib
 from threading import RLock
+import threading
 import strestutil
 
 
+
+
+
+
+STREST_VERSION = "STREST/0.1"
+USER_AGENT = "PyStrest/0.1"
 
 class StrestResponseReader(object):
     
@@ -32,10 +39,7 @@ class StrestResponseReader(object):
             # http://stackoverflow.com/questions/1838699/how-can-i-decompress-a-gzip-stream-with-zlib
             self._decompressor = zlib.decompressobj(16+zlib.MAX_WBITS)
         if self.response.headers.get("Transfer-Encoding") == "chunked":
-#            self.chunks = []
-#            self.stream.read_until("\r\n", self._on_chunk_length)
-#            TODO: Handle chunked encoding
-            pass
+            raise Exception("CHUNKED ENCODING not supported!")
         elif "Content-Length" in self.response.headers:
             num_bytes = int(self.response.headers["Content-Length"])
             self.asynch_buffer.read_bytes(num_bytes, self._content_callback)
@@ -166,13 +170,27 @@ class AsynchBuffer(object):
         
         self._attempt_read()
     
+''' Global thread for use in the ioloop '''
+
+
+def _start_io_loop():
+    threading.Thread(target=asyncore.loop).start()
+        
+        
 '''
-    Example asynch httpclient
-    http://docs.python.org/library/asyncore.html
+    The Strest Client
+    
+    
 '''
 class StrestClient(asyncore.dispatcher):
 
-    def __init__(self, host, port, disconnect_callback=None):
+    '''
+        host -> the address
+        port -> the port
+        disconnect_callback -> called on disconnect
+        threaded_io_loop -> if true (default) will start a separate thread that the ioloop runs in.  if False you MUST call asyncore.loop() from elsewhere.
+    '''
+    def __init__(self, host, port, disconnect_callback=None, threaded_io_loop=True):
         asyncore.dispatcher.__init__(self)
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connect( (host, port) )
@@ -180,51 +198,77 @@ class StrestClient(asyncore.dispatcher):
         self.callbacks = dict()
         self.in_buf = AsynchBuffer()
         self.disconnect_callback = disconnect_callback
-        self.responses = StrestResponseReader(self.in_buf, self.message_received)
+        self.responses = StrestResponseReader(self.in_buf, self._message_received)
+        self.lock = RLock()
+        if threaded_io_loop:
+            _start_io_loop()
+
+    '''
+        Sends a request to the server.
+        
+        request -> expected to be an instance of STRESTRequest
+        response_callback -> function(STRESTResponse)
+        txn_complete_callback -> function(STRESTResponse)
+        error_callback -> function(exception) - this will only be called in cases of transport problems (ie disconnection).
+        
+        Note - Callbacks are all executed in the main IO loop, so it is the responsibilty of the caller
+        to delegate any heavy processing or blocking functionality elsewhere.
+        
+    '''
+    def send_request(self, request, response_callback, txn_complete_callback=None, error_callback=None):
+        with self.lock :
+            request.headers.set_if_absent(strestutil.HEADERS.TXN_ID, strestutil.generate_txn_id())
+            request.headers.set_if_absent(strestutil.HEADERS.TXN_ACCEPT, "multi")
+            request.headers.set_if_absent("User-Agent", USER_AGENT)
+            self.callbacks[request.headers.get_txn_id()] = (response_callback, txn_complete_callback, error_callback)
+            
+            # Set the content length
+            if "Content-Length" not in request.headers:
+                length = 0
+                if request.content :
+                    length = len(request.content)
+                request.headers['Content-Length'] = length
+            
+    
+            lines = [request.method + " " + request.uri + " " + STREST_VERSION]
+            lines.extend(["%s: %s" % (n, v) for n, v in request.headers.iteritems()])
+            packet = "\r\n".join(lines) + "\r\n\r\n"
+            print "******"
+            print packet
+            print "*******"
+            self.buffer.extend(packet)
     
         
-    def message_received(self, response):
+    def _message_received(self, response):
         print "recieved"
-        callback = self.callbacks.get(response.headers.get_txn_id())
+        with self.lock :
+            callback = self.callbacks.get(response.headers.get_txn_id())
+        
+        try :
+            if callback :
+                callback[0](response)
+        except :
+            pass #do something smarter here.
+        
         if response.headers.get(strestutil.HEADERS.TXN_STATUS, "complete").lower() == "complete" :
+            if callback and callback[1] :
+                callback[1](response)
             del self.callbacks[response.headers.get_txn_id()]
-        if callback :
-            callback[0](response)
-
-    def send_request(self, request, response_callback, error_callback=None):
-        request.headers.set_if_absent(strestutil.HEADERS.TXN_ID, strestutil.generate_txn_id())
-        request.headers.set_if_absent(strestutil.HEADERS.TXN_ACCEPT, "multi")
-        self.callbacks[request.headers.get_txn_id()] = (response_callback, error_callback)
-        
-        # Set the content length
-        if "Content-Length" not in request.headers:
-            length = 0
-            if request.content :
-                length = len(request.content)
-            request.headers['Content-Length'] = length
-        
-
-        lines = [request.method + " " + request.uri + " " + strestutil.STREST_VERSION]
-        lines.extend(["%s: %s" % (n, v) for n, v in request.headers.iteritems()])
-        packet = "\r\n".join(lines) + "\r\n\r\n"
-        print "******"
-        print packet
-        print "*******"
-        self.buffer.extend(packet)
-        
+            
     
         
     def handle_connect(self):
         pass
 
     def handle_close(self):
-        print "CLOSED!"
-        if self.disconnect_callback :
-            self.disconnect_callback(self)
-        for txn in self.callbacks :
-            if self.callbacks[txn][1] :
-                self.callbacks[txn][1](self, Exception("Disconnected!"))    
-        self.close()
+        with self.lock :
+            print "CLOSED!"
+            if self.disconnect_callback :
+                self.disconnect_callback(self)
+            for txn in self.callbacks :
+                if self.callbacks[txn][2] :
+                    self.callbacks[txn][2](Exception("Disconnected!"))    
+            self.close()
 
     def handle_read(self):
         self.in_buf.add_bytes(self.recv(8192))
@@ -234,10 +278,13 @@ class StrestClient(asyncore.dispatcher):
         return (len(self.buffer) > 0)
 
     def handle_write(self):
-        sent = self.send(self.buffer)
-        self.buffer = self.buffer[sent:]
-        
-        
+        with self.lock:
+            sent = self.send(self.buffer)
+            self.buffer = self.buffer[sent:]
+
+
+
+    
 def example_callback(response):
     print str(response)
             
@@ -245,12 +292,5 @@ def example_callback(response):
 if __name__ == "__main__":
     client = StrestClient('localhost', 8000)
     request = STRESTRequest('/firehose')
-    
-    client.send_request(request, example_callback)
-    print "entering loop"
-    asyncore.loop()
-    print "loop done"
-    
-    
-
+    client.send_request(request, example_callback)    
     

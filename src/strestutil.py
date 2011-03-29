@@ -39,7 +39,6 @@ class HEADERS:
     TXN_ACCEPT = "Strest-Txn-Accept"
     TXN_STATUS = "Strest-Txn-Status"
     
-STREST_VERSION = "STREST/0.1"
 class STRESTHeaders(dict):
     
     """A dictionary that maintains Http-Header-Case for all keys.
