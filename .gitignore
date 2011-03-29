@@ -1,0 +1,8 @@
+# IGNORED FILES 
+#
+tmp/
+build/*
+*.pyc
+*.project
+*.pydevproject
+*.settings
