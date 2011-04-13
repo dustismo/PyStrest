@@ -4,7 +4,7 @@ import zlib
 from threading import RLock, BoundedSemaphore
 import threading
 import strestutil
-
+import time
 
 
 STREST_VERSION = "STREST/0.1"
@@ -21,8 +21,8 @@ class StrestResponseReader(object):
         
     
     def _header_callback(self, bytes):
-        print "****** HEADER"
-        print str(bytes)
+#        print "****** RECEIVED HEADER"
+#        print str(bytes)
         self.response = STRESTResponse()
         self.response.parse_headers(bytes)
         self.read_content()
@@ -47,8 +47,8 @@ class StrestResponseReader(object):
         if self._decompressor :
             bytes = self._decompressor.decompress(bytes)
         
-        print "******* CONTENT"
-        print str(bytes)
+#        print "******* CONTENT"
+#        print str(bytes)
         
         self.response.content = bytes
         self.respose_callback(self.response)
@@ -130,9 +130,8 @@ class AsynchBuffer(object):
         if num_bytes < 1 :
             self._do_callback('', callback)
             return
-        
         with self.lock :
-            if len(self.buf) > num_bytes :
+            if len(self.buf) >= num_bytes :
                 bytes = self.buf[0:num_bytes]
                 self.buf = self.buf[num_bytes:]
                 self._do_callback(bytes, callback)
@@ -257,9 +256,9 @@ class StrestClient(asyncore.dispatcher):
             lines = [request.method + " " + request.uri + " " + STREST_VERSION]
             lines.extend(["%s: %s" % (n, v) for n, v in request.headers.iteritems()])
             packet = "\r\n".join(lines) + "\r\n\r\n"
-            print "******"
-            print packet
-            print "*******"
+#            print "******"
+#            print packet
+#            print "*******"
             self.buffer.extend(packet)
     
     '''
@@ -275,7 +274,6 @@ class StrestClient(asyncore.dispatcher):
         return cb.await_response()
         
     def _message_received(self, response):
-        print "recieved"
         with self.lock :
             callback = self.callbacks.get(response.headers.get_txn_id())
         
@@ -319,18 +317,30 @@ class StrestClient(asyncore.dispatcher):
 
 
 
+def print_response(response):
+    print "***** RESPONSE CONTENT ******"
+    print str(response.content)
+    print "***** **************** ******"
     
 def example_callback(response):
-    print str(response)
+    print_response(response)
+    print "\n"
             
 #main app entry point
 if __name__ == "__main__":
     client = StrestClient('localhost', 8000)
-    request = STRESTRequest('/firehose')
-    client.send_request(request, example_callback)    
     
-    request = STRESTRequest('/hello/strest')
+    # required param example
+    # Note the use of the blocking request..
+    request = STRESTRequest('/require?what=something')
     response = client.send_blocking_request(request)
-    print "GOT IT! ", response.content
+    print_response(response)
     
+    # Firehose example.
+    request = STRESTRequest('/firehose')
+    client.send_request(request, example_callback)
+    
+    print "\nFIREHOSE EXAMPLE FOR 30 seconds\n"
+    time.sleep(30)
+    print "30 seconds is over, goodbye"
     
