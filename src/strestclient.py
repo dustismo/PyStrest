@@ -281,7 +281,9 @@ class StrestClient(asyncore.dispatcher):
             if callback :
                 callback[0](response)
         except :
-            pass #do something smarter here.
+            # TODO: print stack trace or log or something.
+            print "Error executing callback, check your callback code"
+            pass 
         
         if response.headers.get(strestutil.HEADERS.TXN_STATUS, "complete").lower() == "complete" :
             if callback and callback[1] :

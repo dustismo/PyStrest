@@ -18,6 +18,7 @@
 
 import itertools
 import re
+import urllib
 
 """STREST utility code shared by clients and servers."""
 
@@ -34,6 +35,23 @@ _counter = itertools.count()
 def generate_txn_id():
     return 'pystrest_' + str(_counter.next())
     
+    
+
+def _clean_param(value):
+    if isinstance(value, basestring) : 
+        return value.encode("ASCII","replace")        
+    return value
+
+'''
+    Safely url encodes a param dict
+'''
+def urlencode(params):
+    #        fix unicode characters for older versions of urllib
+    for k in params :
+        params[_clean_param(k)] = _clean_param(params[k])
+    return urllib.urlencode(params, True)
+
+
 class HEADERS:
     TXN_ID = "Strest-Txn-Id"
     TXN_ACCEPT = "Strest-Txn-Accept"
@@ -203,7 +221,8 @@ class STRESTResponse(object):
              
     def parse_headers(self, headers):
         first_line, _, header_data = str(headers).partition("\r\n")
-        match = re.match("STREST/[01].[0-9]+ ([0-9]+) .*", first_line)
+        match = re.match("STREST/[01].[0-9]+ ([0-9]+) (.*)", first_line)
         assert match
         self.code = int(match.group(1))
+        self.message = str(match.group(2))
         self.headers = STRESTHeaders.parse(header_data)   
