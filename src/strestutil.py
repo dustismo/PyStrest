@@ -19,6 +19,7 @@
 import itertools
 import re
 import urllib
+import datetime
 
 """STREST utility code shared by clients and servers."""
 
@@ -34,16 +35,20 @@ _counter = itertools.count()
 '''
 def generate_txn_id():
     return 'pystrest_' + str(_counter.next())
-    
-    
+
+
 
 def _clean_param(value):
     if isinstance(value, basestring) : 
         return value.encode("ASCII","replace")        
+    if isinstance(value, datetime.date) :
+        return value.isoformat()
+
     return value
 
 '''
     Safely url encodes a param dict
+    automatically encodes dates and times as iso format.
 '''
 def urlencode(params):
     #        fix unicode characters for older versions of urllib
@@ -213,7 +218,21 @@ class STRESTRequest(object):
         self.method = method
         self.headers = headers
         self.content = content
-       
+    
+    '''
+        url encodes the dict and sets the content type to 
+    '''
+    def set_post_params(self, params):
+        self.headers['Content-Type'] = 'application/x-www-form-urlencoded'
+        self.content = urlencode(params)
+        del self.headers['Content-Length']
+    
+    '''
+        url encodes the dict and sets it in the URI 
+    '''
+    def set_get_params(self, params):
+        self.uri += '?' + urlencode(params)
+    
 class STRESTResponse(object):
     def __init__(self):
         self.headers = STRESTHeaders()

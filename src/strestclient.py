@@ -1,10 +1,11 @@
-import asyncore, socket
-from strestutil import STRESTHeaders, STRESTResponse, STRESTRequest
+from strestutil import STRESTResponse, STRESTRequest
 import zlib
 from threading import RLock, BoundedSemaphore
 import threading
 import strestutil
+import socket
 import time
+import sys, traceback
 
 
 STREST_VERSION = "STREST/0.1"
@@ -163,14 +164,8 @@ class AsynchBuffer(object):
             self.buf.extend(bytes)
         
         self._attempt_read()
-    
-''' Global thread for use in the ioloop '''
 
 
-def _start_io_loop():
-    thread = threading.Thread(target=asyncore.loop)
-    thread.daemon = True
-    thread.start()
 
 '''
     This (internal) class allows us to do blocking requests via the asynch send_request method
@@ -199,33 +194,69 @@ class BlockingRequest():
             raise self.exception
         return self.response
         
+class _ReadThread(threading.Thread):
+    
+    def __init__(self, strest_client):
+        threading.Thread.__init__(self)
+        self.daemon = True
+        self.strest = strest_client
         
+    def run(self):
+        while 1 :
+            try :
+                data = self.strest.socket.recv(8192)
+                if not data :
+                    self.strest._close()
+                    return
+                
+                self.strest.in_buf.add_bytes(data)
+            except socket.timeout :
+#                print "timeout, trying read again"
+                pass
+            except socket.error :
+                print "There was a socket error, closing"
+                self.strest._close()
+                
+        
+    
 '''
     The Strest Client
     
     
 '''
-class StrestClient(asyncore.dispatcher):
+class StrestClient():
 
     '''
+        Initializes and connects the client to the host.
+        
         host -> the address
         port -> the port
         disconnect_callback -> called on disconnect
-        threaded_io_loop -> if true (default) will start a separate thread that the ioloop runs in.  if False you MUST call asyncore.loop() from elsewhere.
     '''
-    def __init__(self, host, port, disconnect_callback=None, threaded_io_loop=True):
-        asyncore.dispatcher.__init__(self)
-        self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.connect( (host, port) )
-        self.buffer = bytearray()
+    def __init__(self, host, port, disconnect_callback=None):
+        
+        self.host = host
+        self.port = port
+        
         self.callbacks = dict()
         self.in_buf = AsynchBuffer()
         self.disconnect_callback = disconnect_callback
         self.responses = StrestResponseReader(self.in_buf, self._message_received)
         self.lock = RLock()
-        if threaded_io_loop:
-            _start_io_loop()
-
+        
+        
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.connect( (host, port) )
+        self.socket.settimeout(10)
+        
+        
+       
+        self.read_thread = _ReadThread(self)
+        self.read_thread.start()
+        self.connected = True
+        
+        
+        
     '''
         Sends a request to the server.
         
@@ -256,10 +287,17 @@ class StrestClient(asyncore.dispatcher):
             lines = [request.method + " " + request.uri + " " + STREST_VERSION]
             lines.extend(["%s: %s" % (n, v) for n, v in request.headers.iteritems()])
             packet = "\r\n".join(lines) + "\r\n\r\n"
-#            print "******"
-#            print packet
-#            print "*******"
-            self.buffer.extend(packet)
+            print "******"
+            print packet
+            print "*******"
+            try :
+                self.socket.sendall(packet)
+            except :
+                # socket error.
+                self._close()
+                
+                
+        
     
     '''
         Does a blocking request.
@@ -280,44 +318,37 @@ class StrestClient(asyncore.dispatcher):
         try :
             if callback :
                 callback[0](response)
-        except :
-            # TODO: print stack trace or log or something.
+        except:
+            traceback.print_exc(file=sys.stdout)
             print "Error executing callback, check your callback code"
-            pass 
+            pass #do something smarter here.
         
         if response.headers.get(strestutil.HEADERS.TXN_STATUS, "complete").lower() == "complete" :
             if callback and callback[1] :
                 callback[1](response)
             del self.callbacks[response.headers.get_txn_id()]
             
-    
+    '''
+        Closes the connection and releases any resources.
         
-    def handle_connect(self):
-        pass
+        All waiting waiting async calls will be sent a disconnected exception
+    ''' 
+    def close(self):
+        self._close()
 
-    def handle_close(self):
+    def _close(self):
         with self.lock :
-            print "CLOSED!"
-            if self.disconnect_callback :
-                self.disconnect_callback(self)
-            for txn in self.callbacks :
-                if self.callbacks[txn][2] :
-                    self.callbacks[txn][2](Exception("Disconnected!"))    
-            self.close()
-
-    def handle_read(self):
-        self.in_buf.add_bytes(self.recv(8192))
+            if self.connected :
+                if self.disconnect_callback :
+                    self.disconnect_callback(self)
+                for txn in self.callbacks :
+                    if self.callbacks[txn][2] :
+                        self.callbacks[txn][2](Exception("Disconnected!"))    
+                self.socket.close()
+                self.connected = False
+            else :
+                print "StrestClient already closed, skipping"
         
-
-    def writable(self):
-        return (len(self.buffer) > 0)
-
-    def handle_write(self):
-        with self.lock:
-            sent = self.send(self.buffer)
-            self.buffer = self.buffer[sent:]
-
-
 
 def print_response(response):
     print "***** RESPONSE CONTENT ******"
@@ -330,7 +361,7 @@ def example_callback(response):
             
 #main app entry point
 if __name__ == "__main__":
-    client = StrestClient('localhost', 8000)
+    client = StrestClient('localhost', 8010)
     
     # required param example
     # Note the use of the blocking request..
