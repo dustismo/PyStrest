@@ -1,4 +1,5 @@
-from strestutil import STRESTResponse, STRESTRequest
+import asyncore, socket
+from strestutil import STRESTHeaders, STRESTResponse, STRESTRequest
 import zlib
 from threading import RLock, BoundedSemaphore
 import threading
@@ -8,8 +9,8 @@ import time
 import sys, traceback
 
 
-STREST_VERSION = "STREST/0.1"
-USER_AGENT = "PyStrest/0.1"
+STREST_VERSION = "2"
+USER_AGENT = "PyStrest/0.2"
 
 class StrestResponseReader(object):
     
@@ -216,7 +217,7 @@ class _ReadThread(threading.Thread):
             except socket.error :
                 print "There was a socket error, closing"
                 self.strest._close()
-                
+                return
         
     
 '''
@@ -292,8 +293,13 @@ class StrestClient():
             print "*******"
             try :
                 self.socket.sendall(packet)
-            except :
+                if request.content and len(request.content) > 0:
+                    self.socket.sendall(request.content)
+            except Exception as inst:
                 # socket error.
+#                print 'Socket exception!'
+#                print 'Type: ' + str(type(inst))
+#                print inst
                 self._close()
                 
                 
@@ -341,13 +347,16 @@ class StrestClient():
             if self.connected :
                 if self.disconnect_callback :
                     self.disconnect_callback(self)
-                for txn in self.callbacks :
-                    if self.callbacks[txn][2] :
-                        self.callbacks[txn][2](Exception("Disconnected!"))    
+                    
                 self.socket.close()
                 self.connected = False
             else :
                 print "StrestClient already closed, skipping"
+            # alert all the callbacks that the client is disconnected.
+            for txn in self.callbacks :
+                if self.callbacks[txn][2] :
+                    self.callbacks[txn][2](Exception("Disconnected!"))
+            self.callbacks.clear()
         
 
 def print_response(response):
