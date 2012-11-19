@@ -1,172 +1,174 @@
-import asyncore, socket
-from strestutil import STRESTHeaders, STRESTResponse, STRESTRequest
-import zlib
+import socket
 from threading import RLock, BoundedSemaphore
 import threading
-import strestutil
 import socket
 import time
+import json
 import sys, traceback
+
 
 
 STREST_VERSION = "2"
 USER_AGENT = "PyStrest/0.2"
 
-class StrestResponseReader(object):
+
+class STRESTMessage(dict):
+    def __init__(self, mapping={}):
+        self.update(mapping)
+        return
     
-    def __init__(self, asynch_buffer, response_callback):
-        self.response = None
-        self._decompressor = None
-        self.asynch_buffer = asynch_buffer
-        self.asynch_buffer.read_until('\r\n\r\n', self._header_callback)
-        self.respose_callback = response_callback
-        
-    
-    def _header_callback(self, bytes):
-#        print "****** RECEIVED HEADER"
-#        print str(bytes)
-        self.response = STRESTResponse()
-        self.response.parse_headers(bytes)
-        self.read_content()
-        
-    def read_content(self):
-        self._decompressor = None
-        if (self.response.headers.get("Content-Encoding") == "gzip"):
-            # Magic parameter makes zlib module understand gzip header
-            # http://stackoverflow.com/questions/1838699/how-can-i-decompress-a-gzip-stream-with-zlib
-            self._decompressor = zlib.decompressobj(16+zlib.MAX_WBITS)
-        if self.response.headers.get("Transfer-Encoding") == "chunked":
-            raise Exception("CHUNKED ENCODING not supported!")
-        elif "Content-Length" in self.response.headers:
-            num_bytes = int(self.response.headers["Content-Length"])
-            self.asynch_buffer.read_bytes(num_bytes, self._content_callback)
-        else:
-            raise Exception("No Content-length or chunked encoding, "
-                            "don't know how to read")
-        
-        
-    def _content_callback(self, bytes):
-        if self._decompressor :
-            bytes = self._decompressor.decompress(bytes)
-        
-#        print "******* CONTENT"
-#        print str(bytes)
-        
-        self.response.content = bytes
-        self.respose_callback(self.response)
-        
-        self.asynch_buffer.read_until('\r\n\r\n', self._header_callback)
-            
-        
-'''
-    An asynchronous buffer dealing with byte streams
-    currently only one read request is allowed at a time.  
-    
-    We could queue requests, but that seems fairly dangerous.  Will consider 
-    if there is a need.
-    
-    Should be pretty fast, though some optimizations wouldn't hurt.
-'''
-class AsynchBuffer(object):
-    
-    def __init__(self):
-        self.buf = bytearray()
-        self.pointer = 0
-        self.reader = None
-        self.lock = RLock()
-        
-    
-    def _set_reader(self, method, val, callback):
-        with self.lock :
-            if not method :
-                self.reader = None
-                return
-            
-            if self.reader :
-                print str(self.reader)
-                print method, val, callback
-                raise Exception("There is already a reader waiting")
-            else :
-                self.reader = (method, val, callback)
-        
-        # now try to execute it
-        self._attempt_read()
-    
-    def _get_reader(self):
-        with self.lock :
-            return self.reader
-        
-    
-    '''
-        Reads the specified number of bytes from the buffer
-        calls the callback once the bytes are available.
-    '''
-    def read_bytes(self, num_bytes, callback):
-        self._set_reader("read_bytes", num_bytes, callback)
+    def get_txn_id(self):
+        return self.get('strest.txn.id')
 
     '''
-        reads until the specified string is encountered. 
+        puts only if the value does not exist in the map
     '''
-    def read_until(self, string, callback):
-        self._set_reader("read_until", string, callback)
-        
-    '''
-        attempts to read the requested data from the buffer.
-        if read_until or read_bytes has not been called, then
-        this does nothing.
-    '''
-    def _attempt_read(self):
-        reader = self._get_reader()
-        if not reader :
-            return    
-        method = reader[0]
-        if method == 'read_until' :
-            self._read_until(reader[1], reader[2])
-        elif method == 'read_bytes' :
-            self._read_bytes(reader[1], reader[2])
-    '''
-        Reads the specified number of bytes
-        executes the callback once that number of bytes is read
-    '''
-    def _read_bytes(self, num_bytes, callback):    
-        if num_bytes < 1 :
-            self._do_callback('', callback)
+    def put_default(self, key, value):
+        if self.get(key):
             return
-        with self.lock :
-            if len(self.buf) >= num_bytes :
-                bytes = self.buf[0:num_bytes]
-                self.buf = self.buf[num_bytes:]
-                self._do_callback(bytes, callback)
+        self.put(key,value)
+
+
+    '''
+        updates the map, honors the dot operator
+    '''
+    def put(self, key, value):
+        keys = key.split(".")
+        tmp = self
+        for k in keys[0:-1]:
+            tmp2 = tmp.get(k)
+            
+            if not tmp2:
+                tmp2 = {}
+                tmp[k] = tmp2
+            tmp = tmp2
+        tmp[keys[-1]] = value
+
+    '''
+        Getter, works like normal dict but honors the dot operator.
+    '''
+    def get(self, key, default=None):
+        #Surround this with try in case key is None or not a string or somethingtry:
+        try:
+            keys = key.split(".")
+            tmp = super(STRESTMessage, self).get(keys.pop(0), default)
+            
+            for k in keys :
+                try:
+                    tmp = tmp[k]
+                except:
+                    #Exception other than TypeError probably missing key, so default
+                    return default
+            return tmp
+        except:
+            pass
+        return default        
+
+class STRESTRequest(STRESTMessage):
+    def __init__(self, uri, method="GET", params={}):
+        super(STRESTMessage, self).__init__()
+        self.put('strest.uri', uri)
+        self.put('strest.method', method)
+        self.put('strest.params', params)
+
+
+class JsonReader():
+
+    def __init__(self):
+        self.parsed = []
+        self._reset()
+        return
+
+    def _reset(self):
+        self.buffer = ''
+        self.open_brackets = 0;
+        self.is_quote = False;
+        self.is_escape = False;
         
-        
-    def _read_until(self, val, callback):
-        with self.lock :
-            index = self.buf.find(val, self.pointer)
-            if index == -1 :
-                # we set the new pointer to be 4 less then the length.
-                # this is in case the last bytes ends with \r\n\r
-                self.pointer = max(len(self.buf)-len(val), 0) 
+
+    def _object_complete(self):
+        #TODO: handle badly formed json
+        try :
+            parsed = STRESTMessage(json.loads(self.buffer))
+        except Exception,e:
+            parsed = e
+        self._reset()
+        self.parsed.append(parsed)
+
+        #reset everythign
+
+    '''
+    return the next parsed object.  returns None if no objects are availabel.
+    should throw an exception if there was an invalid object
+    '''
+    def next(self):
+        if len(self.parsed) == 0:
+            return None
+        obj = self.parsed.pop(0)
+        if isinstance(obj, Exception):
+            raise obj
+        return obj
+
+
+    '''
+     some amount of incoming characters
+    '''
+    def incoming(self, str):
+        for c in str:
+            self.buffer += c
+            if c == '{' :
+                self.open_brackets += 1
+            elif c == '"' :
+                if not self.is_escape:
+                    self.is_quote = not self.is_quote
+            elif c == '}' :
+                self.open_brackets -= 1
+                if self.open_brackets == 0 :
+                    #object is complete.
+                    self._object_complete()
+                    continue
+
+            if c == '\\' :
+                self.is_escape = not self.is_escape
             else :
-                bytes = self.buf[0:index]
-                self.buf = self.buf[index+len(val):]
-                self.pointer = 0
-                self._do_callback(bytes, callback)
-        
-    def _do_callback(self, bytes, callback):
-        self._set_reader(None, None, None)
-        #clear any 
-        callback(bytes)
-        
+                self.is_escape = False
+
+
+class _ReadThread(threading.Thread):
     
-        
-    def add_bytes(self, bytes):
-        with self.lock :
-            # This might be an atomic op, check on that..
-            self.buf.extend(bytes)
-        
-        self._attempt_read()
+    def __init__(self, strest_client):
+        threading.Thread.__init__(self)
+        self.daemon = True
+        self.strest = strest_client
 
+        
+    def run(self):
+        jsonReader = JsonReader()
+        while 1 :
+            try :
+                data = self.strest.socket.recv(8192)
+                if not data :
+                    self.strest._close()
+                    return
+                data = data.decode('utf-8')
+                jsonReader.incoming(data)
 
+                msg = jsonReader.next()
+                while msg:
+                    self.strest._message_received(msg)
+
+            except socket.timeout :
+#                print "timeout, trying read again"
+                pass
+            except socket.error :
+                print "There was a socket error, closing"
+                self.strest._close()
+                return
+            except Exception, e:
+                traceback.print_exc(file=sys.stdout)
+                print "some errror happened"
+                return
+        
 
 '''
     This (internal) class allows us to do blocking requests via the asynch send_request method
@@ -195,30 +197,7 @@ class BlockingRequest():
             raise self.exception
         return self.response
         
-class _ReadThread(threading.Thread):
-    
-    def __init__(self, strest_client):
-        threading.Thread.__init__(self)
-        self.daemon = True
-        self.strest = strest_client
-        
-    def run(self):
-        while 1 :
-            try :
-                data = self.strest.socket.recv(8192)
-                if not data :
-                    self.strest._close()
-                    return
-                
-                self.strest.in_buf.add_bytes(data)
-            except socket.timeout :
-#                print "timeout, trying read again"
-                pass
-            except socket.error :
-                print "There was a socket error, closing"
-                self.strest._close()
-                return
-        
+
     
 '''
     The Strest Client
@@ -240,22 +219,19 @@ class StrestClient():
         self.port = port
         
         self.callbacks = dict()
-        self.in_buf = AsynchBuffer()
         self.disconnect_callback = disconnect_callback
-        self.responses = StrestResponseReader(self.in_buf, self._message_received)
         self.lock = RLock()
         
-        
+
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.connect( (host, port) )
         self.socket.settimeout(10)
         
-        
-       
         self.read_thread = _ReadThread(self)
         self.read_thread.start()
         self.connected = True
         
+        self.txn = 0
         
         
     '''
@@ -272,29 +248,23 @@ class StrestClient():
     '''
     def send_request(self, request, response_callback=None, txn_complete_callback=None, error_callback=None):        
         with self.lock :
-            request.headers.set_if_absent(strestutil.HEADERS.TXN_ID, strestutil.generate_txn_id())
-            request.headers.set_if_absent(strestutil.HEADERS.TXN_ACCEPT, "multi")
-            request.headers.set_if_absent("User-Agent", USER_AGENT)
-            self.callbacks[request.headers.get_txn_id()] = (response_callback, txn_complete_callback, error_callback)
+            self.txn += 1
+            txn_id = 'txn'+str(self.txn)
+
+            request.put_default('strest.txn.id', txn_id)
+            request.put_default('strest.txn.accept', "multi")
+            request.put_default('strest.user-agent', USER_AGENT)
+            request.put_default('strest.v', STREST_VERSION)
             
-            # Set the content length
-            if "Content-Length" not in request.headers:
-                length = 0
-                if request.content :
-                    length = len(request.content)
-                request.headers['Content-Length'] = length
+            self.callbacks[txn_id] = (response_callback, txn_complete_callback, error_callback)
             
-    
-            lines = [request.method + " " + request.uri + " " + STREST_VERSION]
-            lines.extend(["%s: %s" % (n, v) for n, v in request.headers.iteritems()])
-            packet = "\r\n".join(lines) + "\r\n\r\n"
-            print "******"
-            print packet
-            print "*******"
+            
             try :
+                packet = json.dumps(request)
                 self.socket.sendall(packet)
-                if request.content and len(request.content) > 0:
-                    self.socket.sendall(request.content)
+                # print "******"
+                # print packet
+                # print "*******"
             except Exception as inst:
                 # socket error.
 #                print 'Socket exception!'
@@ -313,14 +283,14 @@ class StrestClient():
     '''
     def send_blocking_request(self, request):
         cb = BlockingRequest()
-        request.headers.set(strestutil.HEADERS.TXN_ACCEPT, "single")
+        request.put('strest.txn.accept', "single")
         self.send_request(request, cb.response_callback, None, cb.error_callback)
         return cb.await_response()
         
     def _message_received(self, response):
         with self.lock :
-            callback = self.callbacks.get(response.headers.get_txn_id())
-        
+            callback = self.callbacks.get(response.get_txn_id())
+        print response
         try :
             if callback :
                 callback[0](response)
@@ -329,10 +299,10 @@ class StrestClient():
             print "Error executing callback, check your callback code"
             pass #do something smarter here.
         
-        if response.headers.get(strestutil.HEADERS.TXN_STATUS, "complete").lower() == "complete" :
+        if response.get('strest.txn.status', "complete").lower() == "complete" :
             if callback and callback[1] :
                 callback[1](response)
-            del self.callbacks[response.headers.get_txn_id()]
+            del self.callbacks[response.get_txn_id()]
             
     '''
         Closes the connection and releases any resources.
@@ -359,10 +329,6 @@ class StrestClient():
             self.callbacks.clear()
         
 
-def print_response(response):
-    print "***** RESPONSE CONTENT ******"
-    print str(response.content)
-    print "***** **************** ******"
     
 def example_callback(response):
     print_response(response)
@@ -370,19 +336,15 @@ def example_callback(response):
             
 #main app entry point
 if __name__ == "__main__":
-    client = StrestClient('localhost', 8010)
+    msg = STRESTMessage()
+    client = StrestClient('localhost', 8009)
     
     # required param example
     # Note the use of the blocking request..
-    request = STRESTRequest('/require?what=something')
+    request = STRESTRequest('/ping', 'GET', {'key':'value'})
     response = client.send_blocking_request(request)
-    print_response(response)
+    print response
     
-    # Firehose example.
-    request = STRESTRequest('/firehose')
-    client.send_request(request, example_callback)
-    
-    print "\nFIREHOSE EXAMPLE FOR 30 seconds\n"
-    time.sleep(30)
-    print "30 seconds is over, goodbye"
+    # sys.exit()
+
     
