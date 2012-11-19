@@ -66,11 +66,10 @@ class STRESTMessage(dict):
 
 class STRESTRequest(STRESTMessage):
     def __init__(self, uri, method="GET", params={}):
-        
-        self.uri = _utf8(uri)
-        self.method = method
-        self.headers = headers
-        self.content = content
+        super(STRESTMessage, self).__init__()
+        self.put('strest.uri', uri)
+        self.put('strest.method', method)
+        self.put('strest.params', params)
 
 
 class JsonReader():
@@ -263,9 +262,9 @@ class StrestClient():
             try :
                 packet = json.dumps(request)
                 self.socket.sendall(packet)
-                print "******"
-                print packet
-                print "*******"
+                # print "******"
+                # print packet
+                # print "*******"
             except Exception as inst:
                 # socket error.
 #                print 'Socket exception!'
@@ -330,10 +329,6 @@ class StrestClient():
             self.callbacks.clear()
         
 
-def print_response(response):
-    print "***** RESPONSE CONTENT ******"
-    print str(response.content)
-    print "***** **************** ******"
     
 def example_callback(response):
     print_response(response)
@@ -342,20 +337,11 @@ def example_callback(response):
 #main app entry point
 if __name__ == "__main__":
     msg = STRESTMessage()
-    msg.put('strest.txn.id', 'someid')    
-    print msg
-
-    msg.put('strest.accept', 'poop')
-    print msg
-
-    print msg.get('strest.accept')
-    client = StrestClient('dev.trendrr.com', 8009)
+    client = StrestClient('localhost', 8009)
     
     # required param example
     # Note the use of the blocking request..
-    request = STRESTMessage()
-    request.put('strest.uri', '/ping')
-    request.put('strest.method', 'GET')
+    request = STRESTRequest('/ping', 'GET', {'key':'value'})
     response = client.send_blocking_request(request)
     print response
     
