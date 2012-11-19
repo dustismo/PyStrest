@@ -238,8 +238,8 @@ class StrestClient():
         Sends a request to the server.
         
         request -> expected to be an instance of STRESTRequest
-        response_callback -> function(STRESTResponse)
-        txn_complete_callback -> function(STRESTResponse)
+        response_callback -> function(STRESTMessage)
+        txn_complete_callback -> function(STRESTMessage)
         error_callback -> function(exception) - this will only be called in cases of transport problems (ie disconnection).
         
         Note - Callbacks are all executed in the main IO loop, so it is the responsibilty of the caller
