@@ -8,7 +8,7 @@ import sys, traceback
 
 
 
-STREST_VERSION = "2"
+STREST_VERSION = 2.0
 USER_AGENT = "PyStrest/0.2"
 
 
@@ -114,6 +114,7 @@ class JsonReader():
      some amount of incoming characters
     '''
     def incoming(self, str):
+
         for c in str:
             self.buffer += c
             if c == '{' :
@@ -150,12 +151,15 @@ class _ReadThread(threading.Thread):
                 if not data :
                     self.strest._close()
                     return
+
                 data = data.decode('utf-8')
+                
                 jsonReader.incoming(data)
 
                 msg = jsonReader.next()
                 while msg:
                     self.strest._message_received(msg)
+                    msg = jsonReader.next()
 
             except socket.timeout :
 #                print "timeout, trying read again"
@@ -290,7 +294,6 @@ class StrestClient():
     def _message_received(self, response):
         with self.lock :
             callback = self.callbacks.get(response.get_txn_id())
-        print response
         try :
             if callback :
                 callback[0](response)
@@ -302,7 +305,10 @@ class StrestClient():
         if response.get('strest.txn.status', "complete").lower() == "complete" :
             if callback and callback[1] :
                 callback[1](response)
-            del self.callbacks[response.get_txn_id()]
+            try :
+                del self.callbacks[response.get_txn_id()]
+            except :
+                pass
             
     '''
         Closes the connection and releases any resources.
@@ -337,14 +343,20 @@ def example_callback(response):
 #main app entry point
 if __name__ == "__main__":
     msg = STRESTMessage()
-    client = StrestClient('localhost', 8009)
+    client = StrestClient('localhost', 8081)
     
     # required param example
     # Note the use of the blocking request..
-    request = STRESTRequest('/ping', 'GET', {'key':'value'})
-    response = client.send_blocking_request(request)
-    print response
+    for c in 'five':
+        request = STRESTRequest('/ping', 'GET', {'key':'value'})
+        response = client.send_blocking_request(request)
+        print str(response)
     
-    # sys.exit()
+    # print "***********************"
+    # request = STRESTRequest('/ping', 'GET', {'key':'value'})
+    # response = client.send_blocking_request(request)
+    # print response
+
+    sys.exit()
 
     
