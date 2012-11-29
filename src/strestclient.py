@@ -71,7 +71,9 @@ class STRESTRequest(STRESTMessage):
         self.put('strest.method', method)
         self.put('strest.params', params)
 
-
+'''
+    Implementaion of a streaming json JsonReader
+'''
 class JsonReader():
 
     def __init__(self):
@@ -302,7 +304,7 @@ class StrestClient():
             print "Error executing callback, check your callback code"
             pass #do something smarter here.
         
-        if response.get('strest.txn.status', "complete").lower() == "complete" :
+        if response.get('strest.txn.status', "completed").lower() == "completed" :
             if callback and callback[1] :
                 callback[1](response)
             try :
